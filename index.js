@@ -9,32 +9,46 @@ app.use(express.json());
 const config = {
   server: 'localhost',
   database: 'ntpc_assets',
-  user:'sa',
-  password:'Admin@1234',
-  driver: 'msnodesqlv8',
+  user: 'sa',
+  password: 'ntpc@1234',
   options: {
-    trustedConnection: true,
     trustServerCertificate: true,
     enableArithAbort: true
   }
 };
 
-// Users table banao
 const createUsersTable = async () => {
   try {
     await sql.connect(config);
+    
+    // Users table banao
     await sql.query(`
       IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Users' AND xtype='U')
       CREATE TABLE Users (
         Id INT IDENTITY(1,1) PRIMARY KEY,
         EmployeeId NVARCHAR(50) UNIQUE,
-        Password NVARCHAR(100)
+        Password NVARCHAR(100),
+        Role NVARCHAR(20) DEFAULT 'user'
       )
     `);
+
+    // Role column add karo agar nahi hai
+    await sql.query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE name = 'Role' AND object_id = OBJECT_ID('Users'))
+      ALTER TABLE Users ADD Role NVARCHAR(20) DEFAULT 'user'
+    `);
+
+    // Admin user add karo
     await sql.query(`
       IF NOT EXISTS (SELECT * FROM Users WHERE EmployeeId = 'NTPC001')
-      INSERT INTO Users (EmployeeId, Password) VALUES ('NTPC001', 'ntpc@1234')
+      INSERT INTO Users (EmployeeId, Password, Role) VALUES ('NTPC001', 'ntpc@1234', 'admin')
     `);
+
+    // NTPC001 ko admin banao agar pehle se hai
+    await sql.query(`
+      UPDATE Users SET Role = 'admin' WHERE EmployeeId = 'NTPC001'
+    `);
+
     console.log('Users table ready!');
   } catch (err) {
     console.log('Table error:', err.message);
@@ -42,7 +56,6 @@ const createUsersTable = async () => {
 };
 createUsersTable();
 
-// Login route
 app.post('/login', async (req, res) => {
   const { employeeId, password } = req.body;
   try {
@@ -51,7 +64,7 @@ app.post('/login', async (req, res) => {
       `SELECT * FROM Users WHERE EmployeeId = '${employeeId}' AND Password = '${password}'`
     );
     if (result.recordset.length > 0) {
-      res.json({ success: true });
+      res.json({ success: true, role: result.recordset[0].Role });
     } else {
       res.json({ success: false });
     }
@@ -60,7 +73,76 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// GET all assets
+app.post('/reset-password', async (req, res) => {
+  const { employeeId, newPassword } = req.body;
+  try {
+    await sql.connect(config);
+    const check = await sql.query(`SELECT * FROM Users WHERE EmployeeId = '${employeeId}'`);
+    if (check.recordset.length === 0) {
+      res.json({ success: false, message: 'Employee ID not found!' });
+    } else {
+      await sql.query(`UPDATE Users SET Password = '${newPassword}' WHERE EmployeeId = '${employeeId}'`);
+      res.json({ success: true });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/change-password', async (req, res) => {
+  const { employeeId, oldPassword, newPassword } = req.body;
+  try {
+    await sql.connect(config);
+    const check = await sql.query(
+      `SELECT * FROM Users WHERE EmployeeId = '${employeeId}' AND Password = '${oldPassword}'`
+    );
+    if (check.recordset.length === 0) {
+      res.json({ success: false, message: 'Current password is incorrect!' });
+    } else {
+      await sql.query(`UPDATE Users SET Password = '${newPassword}' WHERE EmployeeId = '${employeeId}'`);
+      res.json({ success: true });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/admin/add-user', async (req, res) => {
+  const { employeeId, password } = req.body;
+  try {
+    await sql.connect(config);
+    const check = await sql.query(`SELECT * FROM Users WHERE EmployeeId = '${employeeId}'`);
+    if (check.recordset.length > 0) {
+      res.json({ success: false, message: 'Employee ID already exists!' });
+    } else {
+      await sql.query(`INSERT INTO Users (EmployeeId, Password, Role) VALUES ('${employeeId}', '${password}', 'user')`);
+      res.json({ success: true });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/admin/users', async (req, res) => {
+  try {
+    await sql.connect(config);
+    const result = await sql.query(`SELECT Id, EmployeeId, Role FROM Users`);
+    res.json(result.recordset);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/admin/users/:id', async (req, res) => {
+  try {
+    await sql.connect(config);
+    await sql.query(`DELETE FROM Users WHERE Id = ${req.params.id}`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/assets', async (req, res) => {
   try {
     await sql.connect(config);
@@ -71,7 +153,6 @@ app.get('/assets', async (req, res) => {
   }
 });
 
-// POST new asset
 app.post('/assets', async (req, res) => {
   const { category, item, total, instock, used, damaged, location } = req.body;
   try {
@@ -84,7 +165,6 @@ app.post('/assets', async (req, res) => {
   }
 });
 
-// PUT update asset
 app.put('/assets/:id', async (req, res) => {
   const { category, item, total, instock, used, damaged, location } = req.body;
   try {
@@ -99,54 +179,11 @@ app.put('/assets/:id', async (req, res) => {
   }
 });
 
-// DELETE asset
 app.delete('/assets/:id', async (req, res) => {
   try {
     await sql.connect(config);
     await sql.query(`DELETE FROM Assets WHERE Id = ${req.params.id}`);
     res.json({ message: 'Asset deleted!' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Register route
-app.post('/register', async (req, res) => {
-  const { employeeId, password } = req.body;
-  try {
-    await sql.connect(config);
-    const check = await sql.query(
-      `SELECT * FROM Users WHERE EmployeeId = '${employeeId}'`
-    );
-    if (check.recordset.length > 0) {
-      res.json({ success: false, message: 'Employee ID already exists!' });
-    } else {
-      await sql.query(
-        `INSERT INTO Users (EmployeeId, Password) VALUES ('${employeeId}', '${password}')`
-      );
-      res.json({ success: true, message: 'Account created!' });
-    }
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Reset password route
-app.post('/reset-password', async (req, res) => {
-  const { employeeId, newPassword } = req.body;
-  try {
-    await sql.connect(config);
-    const check = await sql.query(
-      `SELECT * FROM Users WHERE EmployeeId = '${employeeId}'`
-    );
-    if (check.recordset.length === 0) {
-      res.json({ success: false, message: 'Employee ID not found!' });
-    } else {
-      await sql.query(
-        `UPDATE Users SET Password = '${newPassword}' WHERE EmployeeId = '${employeeId}'`
-      );
-      res.json({ success: true, message: 'Password reset successful!' });
-    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
